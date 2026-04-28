@@ -20,7 +20,7 @@ internal sealed class ImGuiRenderNode : INode, IDisposable
     private readonly ReadOnlyMemory<byte> _vertexSpv;
     private readonly ReadOnlyMemory<byte> _fragmentSpv;
 
-    // Pipeline and font resources (created lazily on first Run)
+    // Pipeline and font resources, created lazily on first Run.
     private IPipeline? _pipeline;
     private IShader? _vertexShader;
     private IShader? _fragmentShader;
@@ -45,7 +45,7 @@ internal sealed class ImGuiRenderNode : INode, IDisposable
         if (!drawData.Valid || drawData.CmdListsCount == 0)
             return;
 
-        // Get the shared swapchain pass opened by MainPassNode
+        // Draw into the shared swapchain pass opened by MainPassNode.
         var activePass = renderWorld.TryGet<ActiveSwapchainPass>();
         if (activePass is null) return;
 
@@ -54,13 +54,11 @@ internal sealed class ImGuiRenderNode : INode, IDisposable
         var swapchainTarget = renderWorld.TryGet<SwapchainTarget>();
         if (swapchainTarget is null) return;
 
-        // Lazy-init pipeline and font atlas (created against the main render pass)
         if (_pipeline is null)
         {
             CreatePipelineAndFontAtlas(gfx, swapchainTarget.RenderPass);
         }
 
-        // Calculate total vertex/index sizes
         int totalVertices = drawData.TotalVtxCount;
         int totalIndices = drawData.TotalIdxCount;
         if (totalVertices == 0 || totalIndices == 0)
@@ -69,7 +67,6 @@ internal sealed class ImGuiRenderNode : INode, IDisposable
         ulong vertexSize = (ulong)(totalVertices * sizeof(ImDrawVert));
         ulong indexSize = (ulong)(totalIndices * sizeof(ushort));
 
-        // Allocate transient vertex/index buffers from the dynamic allocator
         DynamicAllocation vertexAlloc, indexAlloc;
         if (allocator is not null)
         {
@@ -78,10 +75,11 @@ internal sealed class ImGuiRenderNode : INode, IDisposable
         }
         else
         {
-            return; // No allocator - cannot upload ImGui geometry
+            return; // No allocator - cannot upload ImGui geometry.
         }
 
-        // Upload vertex and index data
+        // Upload vertex/index data, concatenating each ImGui command list into the
+        // single transient vertex and index buffer.
         {
             var vtxSpan = allocator.Map(vertexAlloc);
             var idxSpan = allocator.Map(indexAlloc);
@@ -107,11 +105,10 @@ internal sealed class ImGuiRenderNode : INode, IDisposable
             allocator.Unmap(indexAlloc);
         }
 
-        // Draw into the shared pass - no separate render pass needed
         var pass = activePass.Pass;
         var extent = activePass.Extent;
 
-        // Build orthographic projection matrix
+        // Orthographic projection matching ImGui's display rect.
         float L = drawData.DisplayPos.X;
         float R = drawData.DisplayPos.X + drawData.DisplaySize.X;
         float T = drawData.DisplayPos.Y;
@@ -124,7 +121,7 @@ internal sealed class ImGuiRenderNode : INode, IDisposable
             -(R + L) / (R - L), -(T + B) / (B - T), 0, 1.0f
         );
 
-        // Set viewport (in framebuffer pixels, accounting for DPI / framebuffer scale)
+        // Viewport in framebuffer pixels, accounting for DPI / framebuffer scale.
         float fbScaleX = drawData.FramebufferScale.X;
         float fbScaleY = drawData.FramebufferScale.Y;
         float fbWidth = drawData.DisplaySize.X * fbScaleX;
@@ -134,19 +131,15 @@ internal sealed class ImGuiRenderNode : INode, IDisposable
 
         pass.SetViewport(0, 0, fbWidth, fbHeight, 0, 1);
 
-        // Bind pipeline and resources
         pass.SetPipeline(_pipeline!);
         pass.SetBindGroup(_pipeline!, _fontDescriptorSet!);
 
-        // Push projection matrix
         var projBytes = MemoryMarshal.AsBytes(new ReadOnlySpan<Matrix4x4>(in projection));
         pass.PushConstants(_pipeline!, ShaderStageFlags.Vertex, 0, projBytes);
 
-        // Bind vertex and index buffers from dynamic allocator
         pass.SetVertexBuffer(0, new[] { vertexAlloc.Buffer }, new ulong[] { vertexAlloc.Offset });
         pass.SetIndexBuffer(indexAlloc.Buffer, indexAlloc.Offset, IndexType.UInt16);
 
-        // Render draw commands
         var clipOff = drawData.DisplayPos;
         var clipScale = drawData.FramebufferScale;
 
@@ -160,11 +153,10 @@ internal sealed class ImGuiRenderNode : INode, IDisposable
             {
                 var pcmd = cmdList.CmdBuffer[i];
 
-                // User callback (not supported, skip)
+                // User callbacks are not supported by this backend.
                 if (pcmd.UserCallback != IntPtr.Zero)
                     continue;
 
-                // Apply clip rect
                 var clipMin = new Vector2(
                     (pcmd.ClipRect.X - clipOff.X) * clipScale.X,
                     (pcmd.ClipRect.Y - clipOff.Y) * clipScale.Y);
@@ -175,7 +167,7 @@ internal sealed class ImGuiRenderNode : INode, IDisposable
                 if (clipMax.X <= clipMin.X || clipMax.Y <= clipMin.Y)
                     continue;
 
-                // Clamp to framebuffer bounds
+                // Clamp scissor rect to framebuffer bounds (negative origin not allowed).
                 int sx = Math.Max(0, (int)clipMin.X);
                 int sy = Math.Max(0, (int)clipMin.Y);
                 uint sw = (uint)(clipMax.X - sx);
@@ -197,7 +189,7 @@ internal sealed class ImGuiRenderNode : INode, IDisposable
             globalIdxOffset += cmdList.IdxBuffer.Size;
         }
 
-        // Reset scissor to full framebuffer
+        // Restore full-framebuffer scissor for any subsequent overlay nodes.
         pass.SetScissor(0, 0, extent.Width, extent.Height);
     }
 
@@ -238,7 +230,6 @@ internal sealed class ImGuiRenderNode : INode, IDisposable
         _pipeline = gfx.CreateGraphicsPipeline(pipelineDesc);
         Logger.Info("ImGui pipeline created.");
 
-        // Upload font atlas
         var io = ImGui.GetIO();
         io.Fonts.GetTexDataAsRGBA32(out IntPtr pixels, out int width, out int height, out int bytesPerPixel);
 
@@ -253,17 +244,15 @@ internal sealed class ImGuiRenderNode : INode, IDisposable
             SamplerAddressMode.ClampToEdge, SamplerAddressMode.ClampToEdge,
             SamplerAddressMode.ClampToEdge));
 
-        // Upload pixel data
         int dataSize = width * height * bytesPerPixel;
         var pixelData = new ReadOnlySpan<byte>((void*)pixels, dataSize);
         gfx.UploadTexture2D(_fontImage, pixelData, (uint)width, (uint)height, bytesPerPixel);
 
-        // Create and update descriptor set
         _fontDescriptorSet = gfx.CreateDescriptorSet();
         var samplerBinding = new CombinedImageSamplerBinding(_fontImageView, _fontSampler, 1);
         gfx.UpdateDescriptorSet(_fontDescriptorSet, uniformBinding: null, samplerBinding);
 
-        // Set texture ID and free CPU-side pixels
+        // Tag the atlas with a non-zero ID and free CPU-side pixel memory.
         io.Fonts.SetTexID((IntPtr)1);
         io.Fonts.ClearTexData();
 
