@@ -41,6 +41,9 @@ internal sealed class ImGuiRenderNode : INode, IDisposable
     /// <inheritdoc />
     public unsafe void Run(RenderGraphContext graphContext, RenderContext renderContext, RenderWorld renderWorld)
     {
+        // Close the ImGui frame here (Stage.Last) so all Stage.Render UI emitters have run.
+        ImGui.Render();
+
         var drawData = ImGui.GetDrawData();
         if (!drawData.Valid || drawData.CmdListsCount == 0)
             return;
